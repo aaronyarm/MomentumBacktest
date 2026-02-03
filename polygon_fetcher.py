@@ -7,6 +7,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import config
 
 
@@ -40,7 +41,11 @@ class PolygonFetcher:
     """
     Fetches market data from Polygon.io with rate limiting.
     Supports aggregates (bars), ticker details, and reference data.
+    Uses in-memory caching for speed optimization.
     """
+
+    # Class-level cache shared across instances for session persistence
+    _shared_cache: Dict[str, Any] = {}
 
     def __init__(self, api_key: str = None):
         self.api_key = api_key or config.POLYGON_API_KEY
@@ -49,7 +54,8 @@ class PolygonFetcher:
             config.RATE_LIMIT_CALLS,
             config.RATE_LIMIT_PERIOD
         )
-        self.cache: Dict[str, Any] = {}
+        # Use shared cache for persistence across backtests
+        self.cache = PolygonFetcher._shared_cache
 
     def _make_request(self, endpoint: str, params: Dict = None) -> Dict:
         """Make a rate-limited API request."""
@@ -110,10 +116,30 @@ class PolygonFetcher:
             return pd.DataFrame()
 
         df = pd.DataFrame(data["results"])
-        df.columns = ["volume", "vwap", "open", "close", "high", "low", "timestamp", "transactions"]
+
+        # Polygon API returns abbreviated column names - rename them properly
+        column_map = {
+            "v": "volume",
+            "vw": "vwap",
+            "o": "open",
+            "c": "close",
+            "h": "high",
+            "l": "low",
+            "t": "timestamp",
+            "n": "transactions"
+        }
+        df = df.rename(columns=column_map)
+
+        # Ensure timestamp column exists and convert
+        if "timestamp" not in df.columns:
+            return pd.DataFrame()
+
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         df = df.set_index("timestamp")
-        df = df[["open", "high", "low", "close", "volume", "vwap", "transactions"]]
+
+        # Select columns that exist
+        available_cols = [c for c in ["open", "high", "low", "close", "volume", "vwap", "transactions"] if c in df.columns]
+        df = df[available_cols]
 
         self.cache[cache_key] = df
         return df
@@ -204,6 +230,28 @@ class DataManager:
         self.minute_data: Dict[str, pd.DataFrame] = {}
         self.ticker_info: Dict[str, Dict] = {}
 
+    def _fetch_ticker_data(self, ticker: str, from_date: str, to_date: str, include_minute: bool) -> Dict:
+        """Fetch all data for a single ticker (helper for parallel execution)."""
+        result = {"ticker": ticker, "daily": None, "minute": None, "info": None}
+
+        try:
+            df = self.fetcher.get_daily_bars(ticker, from_date, to_date)
+            if not df.empty:
+                result["daily"] = df
+                result["info"] = {
+                    "float": self.fetcher.get_ticker_float(ticker),
+                    "sector": self.fetcher.get_ticker_sector(ticker)
+                }
+
+            if include_minute:
+                minute_df = self.fetcher.get_minute_bars(ticker, from_date, to_date)
+                if not minute_df.empty:
+                    result["minute"] = minute_df
+        except Exception as e:
+            print(f"Error fetching {ticker}: {e}")
+
+        return result
+
     def preload_tickers(
         self,
         tickers: List[str],
@@ -211,25 +259,31 @@ class DataManager:
         to_date: str,
         include_minute: bool = False
     ):
-        """Preload data for multiple tickers."""
+        """Preload data for multiple tickers with parallel fetching for speed."""
         from tqdm import tqdm
 
         print(f"Preloading data for {len(tickers)} tickers...")
 
-        for ticker in tqdm(tickers, desc="Loading daily data"):
-            df = self.fetcher.get_daily_bars(ticker, from_date, to_date)
-            if not df.empty:
-                self.daily_data[ticker] = df
-                self.ticker_info[ticker] = {
-                    "float": self.fetcher.get_ticker_float(ticker),
-                    "sector": self.fetcher.get_ticker_sector(ticker)
-                }
+        # Use parallel fetching for speed (respecting rate limits)
+        # Limit concurrent requests based on rate limit
+        max_workers = min(3, config.RATE_LIMIT_CALLS)
 
-        if include_minute:
-            for ticker in tqdm(tickers, desc="Loading minute data"):
-                df = self.fetcher.get_minute_bars(ticker, from_date, to_date)
-                if not df.empty:
-                    self.minute_data[ticker] = df
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self._fetch_ticker_data, ticker, from_date, to_date, include_minute): ticker
+                for ticker in tickers
+            }
+
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Loading data"):
+                result = future.result()
+                ticker = result["ticker"]
+
+                if result["daily"] is not None:
+                    self.daily_data[ticker] = result["daily"]
+                if result["info"] is not None:
+                    self.ticker_info[ticker] = result["info"]
+                if result["minute"] is not None:
+                    self.minute_data[ticker] = result["minute"]
 
     def get_daily(self, ticker: str) -> pd.DataFrame:
         """Get daily data for a ticker."""

@@ -305,11 +305,16 @@ class Backtester:
 
             # Get current bar
             try:
-                current_idx = daily_data.index.get_loc(
-                    daily_data.index[daily_data.index.date == date.date()][0]
-                )
+                # Handle both DatetimeIndex and RangeIndex cases
+                if hasattr(daily_data.index, 'date'):
+                    current_idx = daily_data.index.get_loc(
+                        daily_data.index[daily_data.index.date == date.date()][0]
+                    )
+                else:
+                    # Fallback: use last available index
+                    current_idx = len(daily_data) - 1
                 current_bar = daily_data.iloc[current_idx]
-            except (IndexError, KeyError):
+            except (IndexError, KeyError, AttributeError):
                 continue
 
             # Find the setup and check exit

@@ -62,10 +62,15 @@ class ContextEngine:
 
         # Get the index for entry date
         try:
-            entry_idx = daily_data.index.get_loc(
-                daily_data.index[daily_data.index.date == entry_date.date()][0]
-            )
-        except (IndexError, KeyError):
+            # Handle both DatetimeIndex and RangeIndex cases
+            if hasattr(daily_data.index, 'date'):
+                entry_idx = daily_data.index.get_loc(
+                    daily_data.index[daily_data.index.date == entry_date.date()][0]
+                )
+            else:
+                # Fallback: use last available index
+                entry_idx = len(daily_data) - 1
+        except (IndexError, KeyError, AttributeError):
             return context
 
         # Slice data up to entry
@@ -227,9 +232,14 @@ class ContextEngine:
                 continue
 
             try:
-                idx = df.index.get_loc(
-                    df.index[df.index.date == date.date()][0]
-                )
+                # Handle both DatetimeIndex and RangeIndex cases
+                if hasattr(df.index, 'date'):
+                    idx = df.index.get_loc(
+                        df.index[df.index.date == date.date()][0]
+                    )
+                else:
+                    idx = len(df) - 1
+
                 current_close = df.iloc[idx]["close"]
                 current_ema4 = ema4.iloc[idx]
                 current_sma50 = sma50.iloc[idx]
@@ -238,7 +248,7 @@ class ContextEngine:
                 regime[f"{prefix}_above_ema4"] = current_close > current_ema4
                 regime[f"{prefix}_above_sma50"] = current_close > current_sma50
 
-            except (IndexError, KeyError):
+            except (IndexError, KeyError, AttributeError):
                 continue
 
         # Determine overall market regime

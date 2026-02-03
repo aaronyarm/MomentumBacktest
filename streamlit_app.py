@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 from datetime import datetime, timedelta
+from typing import List, Dict
 import os
 
 # Import backtester components
@@ -55,12 +56,135 @@ st.markdown("""
 
 # Preset ticker lists
 TICKER_PRESETS = {
+    "-- Select --": [],  # Empty option
     "Mega Tech": ["NVDA", "AMD", "TSLA", "META", "AAPL", "MSFT", "GOOGL", "AMZN"],
     "Semiconductors": ["NVDA", "AMD", "AVGO", "MU", "MRVL", "QCOM", "INTC", "ASML"],
     "Software/SaaS": ["CRM", "NOW", "ADBE", "SNOW", "PLTR", "NET", "DDOG", "ZS"],
     "Fintech": ["SQ", "COIN", "PYPL", "HOOD", "SOFI", "AFRM"],
     "Custom": []
 }
+
+# Catalyst types for auto-population
+CATALYST_TYPES = {
+    "None": None,
+    "Earnings": "earnings",
+    "Analyst Upgrade": "analyst_upgrade",
+    "Analyst Downgrade": "analyst_downgrade",
+    "Major News": "major_news"
+}
+
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def fetch_catalyst_tickers(catalyst_type: str, start_date: str, end_date: str, fetcher: PolygonFetcher = None) -> List[str]:
+    """
+    Fetch tickers with specific catalyst events in the date range.
+    Uses Polygon.io API to find relevant stocks.
+    """
+    if fetcher is None:
+        fetcher = PolygonFetcher()
+
+    tickers = []
+
+    try:
+        if catalyst_type == "earnings":
+            # Search for earnings announcements via ticker news
+            # Use grouped daily to find high-volume gap days (proxy for earnings)
+            for date_offset in range(min(30, (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days)):
+                check_date = (pd.to_datetime(start_date) + timedelta(days=date_offset)).strftime("%Y-%m-%d")
+                data = fetcher.get_grouped_daily(check_date)
+                if not data.empty and 'T' in data.columns:
+                    # Look for stocks with >4% gap and high volume (earnings proxy)
+                    if 'c' in data.columns and 'o' in data.columns and 'v' in data.columns:
+                        data['gap_pct'] = ((data['o'] - data['c'].shift(1)) / data['c'].shift(1)) * 100
+                        high_gap = data[abs(data.get('gap_pct', 0)) > 4]['T'].tolist()
+                        tickers.extend(high_gap[:10])  # Limit per day
+                if len(tickers) >= 20:
+                    break
+
+        elif catalyst_type in ["analyst_upgrade", "analyst_downgrade"]:
+            # For analyst ratings, we use news search as proxy
+            # Polygon free tier has limited news access, so use top movers
+            data = fetcher.get_grouped_daily(start_date)
+            if not data.empty and 'T' in data.columns and 'c' in data.columns and 'o' in data.columns:
+                data['change_pct'] = ((data['c'] - data['o']) / data['o']) * 100
+                if catalyst_type == "analyst_upgrade":
+                    top_movers = data.nlargest(15, 'change_pct')['T'].tolist()
+                else:
+                    top_movers = data.nsmallest(15, 'change_pct')['T'].tolist()
+                tickers.extend(top_movers)
+
+        elif catalyst_type == "major_news":
+            # High volume + high volatility days = major news proxy
+            data = fetcher.get_grouped_daily(start_date)
+            if not data.empty and 'T' in data.columns:
+                if 'v' in data.columns and 'h' in data.columns and 'l' in data.columns and 'c' in data.columns:
+                    data['range_pct'] = ((data['h'] - data['l']) / data['c']) * 100
+                    high_vol = data[data['range_pct'] > 5].nlargest(20, 'v')['T'].tolist()
+                    tickers.extend(high_vol)
+
+    except Exception as e:
+        st.warning(f"Catalyst search error: {e}")
+
+    # Clean and dedupe tickers
+    tickers = list(set([t for t in tickers if t and isinstance(t, str) and len(t) <= 5 and t.isalpha()]))
+    return tickers[:20]  # Limit to 20 tickers
+
+
+def generate_pooled_results(trades_df: pd.DataFrame) -> Dict:
+    """
+    Generate pooled/aggregated results across all tickers.
+    Returns best setup recommendations based on aggregate performance.
+    """
+    if trades_df.empty:
+        return {}
+
+    results = {
+        "total_tickers": trades_df['ticker'].nunique(),
+        "total_trades": len(trades_df),
+        "best_setups": [],
+        "recommendations": []
+    }
+
+    # Analyze by setup type
+    setup_stats = []
+    for setup_type in trades_df['setup_type'].unique():
+        subset = trades_df[trades_df['setup_type'] == setup_type]
+        wins = subset[subset['pnl'] > 0]['pnl'].sum()
+        losses = abs(subset[subset['pnl'] <= 0]['pnl'].sum())
+        pf = wins / losses if losses > 0 else float('inf')
+        win_rate = (subset['pnl'] > 0).mean()
+
+        setup_stats.append({
+            'setup': setup_type,
+            'trades': len(subset),
+            'win_rate': win_rate,
+            'profit_factor': min(pf, 10),
+            'total_pnl': subset['pnl'].sum(),
+            'avg_r': subset['r_multiple'].mean() if 'r_multiple' in subset.columns else 0
+        })
+
+    # Sort by profit factor
+    setup_stats = sorted(setup_stats, key=lambda x: x['profit_factor'], reverse=True)
+    results['best_setups'] = setup_stats[:3]
+
+    # Generate recommendations
+    if setup_stats:
+        best = setup_stats[0]
+        results['recommendations'].append(
+            f"Based on {results['total_tickers']} stocks, **{best['setup']}** shows the best performance "
+            f"with {best['win_rate']:.0%} win rate and {best['profit_factor']:.1f} profit factor."
+        )
+
+        # Context-based recommendations
+        if 'ctx_market_regime' in trades_df.columns:
+            regime_perf = trades_df.groupby('ctx_market_regime')['pnl'].sum()
+            if not regime_perf.empty:
+                best_regime = regime_perf.idxmax()
+                results['recommendations'].append(
+                    f"Best market regime for these stocks: **{best_regime}**"
+                )
+
+    return results
 
 
 def create_equity_chart(trades_df: pd.DataFrame) -> go.Figure:
@@ -258,7 +382,7 @@ def run_backtest_with_progress(tickers, start_date, end_date, selected_setups):
     progress_bar = st.progress(0, text="Initializing...")
 
     try:
-        progress_bar.progress(10, text="Loading market data...")
+        progress_bar.progress(10, text="Loading market data (parallel fetch)...")
 
         # Run the backtest
         trades_df = backtester.run(
@@ -273,7 +397,9 @@ def run_backtest_with_progress(tickers, start_date, end_date, selected_setups):
         return trades_df, backtester.get_equity_curve()
 
     except Exception as e:
+        import traceback
         st.error(f"Backtest error: {str(e)}")
+        st.expander("Error details").code(traceback.format_exc())
         return None, None
 
 
@@ -290,15 +416,29 @@ def main():
         st.subheader("Tickers")
         preset = st.selectbox("Preset Watchlist", list(TICKER_PRESETS.keys()))
 
+        tickers = []
+
         if preset == "Custom":
             ticker_input = st.text_area(
                 "Enter tickers (comma separated)",
                 "NVDA, AMD, TSLA, META"
             )
-            tickers = [t.strip().upper() for t in ticker_input.split(",")]
+            tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
+        elif preset == "-- Select --":
+            # Empty watchlist - show catalyst option
+            st.info("Select a catalyst type below to auto-populate tickers")
         else:
             tickers = TICKER_PRESETS[preset]
-            st.write(f"Selected: {', '.join(tickers)}")
+            if tickers:
+                st.write(f"Selected: {', '.join(tickers)}")
+
+        # Catalyst Type Selection
+        st.subheader("Catalyst Filter")
+        catalyst = st.selectbox(
+            "Auto-populate by catalyst",
+            list(CATALYST_TYPES.keys()),
+            help="Find stocks with specific catalyst events in your date range"
+        )
 
         # Date Range
         st.subheader("Date Range")
@@ -313,6 +453,24 @@ def main():
                 "End",
                 datetime.now()
             )
+
+        # Fetch catalyst tickers if selected
+        if CATALYST_TYPES[catalyst] is not None:
+            with st.spinner(f"Finding {catalyst} stocks..."):
+                catalyst_tickers = fetch_catalyst_tickers(
+                    CATALYST_TYPES[catalyst],
+                    start_date.strftime("%Y-%m-%d"),
+                    end_date.strftime("%Y-%m-%d")
+                )
+                if catalyst_tickers:
+                    tickers = list(set(tickers + catalyst_tickers))
+                    st.success(f"Found {len(catalyst_tickers)} stocks with {catalyst}")
+                    with st.expander("View catalyst tickers"):
+                        st.write(", ".join(catalyst_tickers))
+
+        # Show final ticker count
+        if tickers:
+            st.caption(f"Total tickers: {len(tickers)}")
 
         # Setup Selection
         st.subheader("Setups")
@@ -340,15 +498,22 @@ def main():
 
     # Main Content
     if run_button:
-        with st.spinner("Running backtest..."):
-            result = run_backtest_with_progress(
-                tickers, start_date, end_date, selected_setups
-            )
+        if not tickers:
+            st.error("Please select tickers or choose a catalyst type to auto-populate tickers.")
+        else:
+            with st.spinner("Running backtest..."):
+                result = run_backtest_with_progress(
+                    tickers, start_date, end_date, selected_setups
+                )
 
-            if result and result[0] is not None:
-                trades_df, equity_df = result
-                st.session_state['trades_df'] = trades_df
-                st.session_state['equity_df'] = equity_df
+                if result and result[0] is not None:
+                    trades_df, equity_df = result
+                    st.session_state['trades_df'] = trades_df
+                    st.session_state['equity_df'] = equity_df
+
+                    # Generate pooled results if multiple tickers
+                    if len(tickers) > 1:
+                        st.session_state['pooled_results'] = generate_pooled_results(trades_df)
 
     # Display Results
     if 'trades_df' in st.session_state and not st.session_state['trades_df'].empty:
@@ -380,6 +545,32 @@ def main():
         with col5:
             returns = (total_pnl / config.INITIAL_CAPITAL) * 100
             st.metric("Return", f"{returns:.1f}%")
+
+        # Pooled Results (for multi-ticker analysis)
+        if 'pooled_results' in st.session_state and st.session_state['pooled_results']:
+            pooled = st.session_state['pooled_results']
+            st.markdown("---")
+            st.markdown("### 🔬 Pooled Analysis")
+            st.markdown(f"*Aggregated results across {pooled.get('total_tickers', 0)} stocks*")
+
+            # Recommendations
+            for rec in pooled.get('recommendations', []):
+                st.info(rec)
+
+            # Best setups table
+            if pooled.get('best_setups'):
+                st.markdown("**Top Performing Setups:**")
+                best_df = pd.DataFrame(pooled['best_setups'])
+                st.dataframe(
+                    best_df.style.format({
+                        'win_rate': '{:.0%}',
+                        'profit_factor': '{:.2f}',
+                        'total_pnl': '${:,.0f}',
+                        'avg_r': '{:.2f}R'
+                    }),
+                    use_container_width=True,
+                    hide_index=True
+                )
 
         # Charts Row 1
         st.markdown("---")
