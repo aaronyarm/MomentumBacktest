@@ -95,13 +95,16 @@ class DelayedReactionSetup(BaseSetup):
             Dictionary with consolidation high, low, and tightness
         """
         try:
-            ep_idx = daily_data.index.get_loc(
-                daily_data.index[daily_data.index.date == ep_date.date()][0]
-            )
-            current_idx = daily_data.index.get_loc(
-                daily_data.index[daily_data.index.date == current_date.date()][0]
-            )
-        except (IndexError, KeyError):
+            if hasattr(daily_data.index, 'date'):
+                ep_idx = daily_data.index.get_loc(
+                    daily_data.index[daily_data.index.date == ep_date.date()][0]
+                )
+                current_idx = daily_data.index.get_loc(
+                    daily_data.index[daily_data.index.date == current_date.date()][0]
+                )
+            else:
+                return None
+        except (IndexError, KeyError, AttributeError):
             return None
 
         if current_idx <= ep_idx:
@@ -177,10 +180,13 @@ class DelayedReactionSetup(BaseSetup):
 
         # Get current bar
         try:
-            current_idx = daily_data.index.get_loc(
-                daily_data.index[daily_data.index.date == date.date()][0]
-            )
-        except (IndexError, KeyError):
+            if hasattr(daily_data.index, 'date'):
+                current_idx = daily_data.index.get_loc(
+                    daily_data.index[daily_data.index.date == date.date()][0]
+                )
+            else:
+                return signals
+        except (IndexError, KeyError, AttributeError):
             return signals
 
         current_bar = daily_data.iloc[current_idx]

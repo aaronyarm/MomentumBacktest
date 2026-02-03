@@ -51,10 +51,13 @@ class EpisodicPivotSetup(BaseSetup):
 
         # Get the current day's data
         try:
-            current_idx = daily_data.index.get_loc(
-                daily_data.index[daily_data.index.date == date.date()][0]
-            )
-        except (IndexError, KeyError):
+            if hasattr(daily_data.index, 'date'):
+                current_idx = daily_data.index.get_loc(
+                    daily_data.index[daily_data.index.date == date.date()][0]
+                )
+            else:
+                return signals
+        except (IndexError, KeyError, AttributeError):
             return signals
 
         if current_idx < self.lookback_days:
@@ -225,10 +228,13 @@ class EpisodicPivotSetup(BaseSetup):
         Higher score = stronger continuation.
         """
         try:
-            ep_idx = daily_data.index.get_loc(
-                daily_data.index[daily_data.index.date == ep_date.date()][0]
-            )
-        except (IndexError, KeyError):
+            if hasattr(daily_data.index, 'date'):
+                ep_idx = daily_data.index.get_loc(
+                    daily_data.index[daily_data.index.date == ep_date.date()][0]
+                )
+            else:
+                return 0.0
+        except (IndexError, KeyError, AttributeError):
             return 0.0
 
         follow_data = daily_data.iloc[ep_idx + 1:ep_idx + 1 + days_after]

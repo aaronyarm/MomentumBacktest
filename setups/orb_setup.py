@@ -44,8 +44,15 @@ class ORBSetup(BaseSetup):
         Returns:
             Dictionary with 'high', 'low', 'range' or None if insufficient data
         """
-        # Filter to the specific date
-        day_data = minute_data[minute_data.index.date == date.date()]
+        # Filter to the specific date (handle both DatetimeIndex and RangeIndex)
+        if minute_data.empty:
+            return None
+
+        if hasattr(minute_data.index, 'date'):
+            day_data = minute_data[minute_data.index.date == date.date()]
+        else:
+            # No minute data with proper datetime index
+            return None
 
         if day_data.empty:
             return None
@@ -98,7 +105,10 @@ class ORBSetup(BaseSetup):
         range_end = opening_range["range_end"]
 
         # Get minute data after the opening range
-        day_data = minute_data[minute_data.index.date == date.date()]
+        if hasattr(minute_data.index, 'date'):
+            day_data = minute_data[minute_data.index.date == date.date()]
+        else:
+            return signals  # No valid minute data
         post_or_data = day_data[day_data.index >= range_end]
 
         if post_or_data.empty:

@@ -51,10 +51,13 @@ class EarningsPlaySetup(BaseSetup):
             return None
 
         try:
-            current_idx = daily_data.index.get_loc(
-                daily_data.index[daily_data.index.date == date.date()][0]
-            )
-        except (IndexError, KeyError):
+            if hasattr(daily_data.index, 'date'):
+                current_idx = daily_data.index.get_loc(
+                    daily_data.index[daily_data.index.date == date.date()][0]
+                )
+            else:
+                return None
+        except (IndexError, KeyError, AttributeError):
             return None
 
         if current_idx < 1:
@@ -130,10 +133,13 @@ class EarningsPlaySetup(BaseSetup):
             return signals
 
         try:
-            current_idx = daily_data.index.get_loc(
-                daily_data.index[daily_data.index.date == date.date()][0]
-            )
-        except (IndexError, KeyError):
+            if hasattr(daily_data.index, 'date'):
+                current_idx = daily_data.index.get_loc(
+                    daily_data.index[daily_data.index.date == date.date()][0]
+                )
+            else:
+                return signals
+        except (IndexError, KeyError, AttributeError):
             return signals
 
         current_bar = daily_data.iloc[current_idx]
@@ -199,10 +205,13 @@ class EarningsPlaySetup(BaseSetup):
             return signals
 
         try:
-            current_idx = daily_data.index.get_loc(
-                daily_data.index[daily_data.index.date == date.date()][0]
-            )
-        except (IndexError, KeyError):
+            if hasattr(daily_data.index, 'date'):
+                current_idx = daily_data.index.get_loc(
+                    daily_data.index[daily_data.index.date == date.date()][0]
+                )
+            else:
+                return signals
+        except (IndexError, KeyError, AttributeError):
             return signals
 
         current_bar = daily_data.iloc[current_idx]
@@ -264,10 +273,13 @@ class EarningsPlaySetup(BaseSetup):
             return signals
 
         try:
-            current_idx = daily_data.index.get_loc(
-                daily_data.index[daily_data.index.date == date.date()][0]
-            )
-        except (IndexError, KeyError):
+            if hasattr(daily_data.index, 'date'):
+                current_idx = daily_data.index.get_loc(
+                    daily_data.index[daily_data.index.date == date.date()][0]
+                )
+            else:
+                return signals
+        except (IndexError, KeyError, AttributeError):
             return signals
 
         if current_idx < 20:
